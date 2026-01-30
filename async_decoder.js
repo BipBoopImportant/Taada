@@ -10,7 +10,7 @@ let pendingFrames = [],
     frameTimes = [],
     runtime = 0,
     frameCounter = 0,
-    sps, decoder = null, socket, height, width, port, gl, heart = 0,
+    sps, decoder = null, socket, height, width, port, host, gl, heart = 0,
     broadwayDecoder = null,
     lastheart = 0, pongtimer, frameRate,
     isServerShuttingDown = false, // 🚨 Flag pour indiquer que le serveur s'arrête
@@ -493,19 +493,10 @@ function resetReconnectionState() {
     console.log('🔄 Reconnection state reset');
 }
 
-function startSocket() {
-    socket = new WebSocket(`wss://taada.top:${port}`);
-    socket.sendObject = (obj) => {
-        try {
-            socket.send(JSON.stringify(obj));
-        }
-        catch (e)
-        {
-            self.postMessage({error:e});
-        }
-    }
-
+function start_websocket() {
+    socket = new WebSocket(`wss://${host}:${port}`);
     socket.binaryType = "arraybuffer";
+
     socket.addEventListener('open', () => {
         socket.binaryType = "arraybuffer";
 
@@ -731,6 +722,7 @@ function messageHandler(message) {
 self.addEventListener('message', async (message) => {
     if (message.data.action === 'INIT') {
         port = message.data.port;
+        host = message.data.host;
         appVersion=parseInt(message.data.appVersion);
 
 

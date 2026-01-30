@@ -8,7 +8,7 @@ const demuxDecodeWorker = new Worker("./async_decoder.js"),
     errorOverlay = document.getElementById('error-overlay'),
     errorMessage = document.getElementById('error-message'),
     supportedWebCodec = true, //ToDo consider if older browser should be supported or not, ones without WebCodec, since Tesla does support this might not be needed.
-    DEFAULT_HTTPS_PORT = 8081,
+    DEFAULT_HTTPS_PORT = 8081, VIRTUAL_IPS = ["89.83.67.207", "89.83.67.208"],
     MAX_PORT_RETRIES = 5;
 
 let zoom = Math.max(1, window.innerHeight / 1080),
@@ -64,7 +64,7 @@ async function checkServerReachability() {
         const timeoutId = setTimeout(() => controller.abort(), 3000);
 
         // Essayer de ping le serveur principal
-        const response = await fetch(`https://app.taada.top`, {
+        const response = await fetch(`https://app.89.83.67.207`, {
             method: 'HEAD',
             signal: controller.signal
         });
@@ -265,35 +265,29 @@ function abortFetching() {
 }
 
 /**
- * Essaie de se connecter à un port spécifique
- * @param {number} port - Le port à tester
- * @param {AbortController} controller - Le contrôleur d'abandon
- * @returns {Promise} Promise qui se résout avec les données ou se rejette
+ * Essaie de se connecter à un hôte et port spécifique
  */
-async function tryPort(port, controller) {
-    const urlToFetch = `https://taada.top:${port}/getsocketport?w=${window.innerWidth}&h=${window.innerHeight}&webcodec=${supportedWebCodec}`;
-    
-    console.log(`Trying port ${port}...`);
+async function tryHostPort(host, port, controller) {
+    const urlToFetch = `https://${host}:${port}/getsocketport?w=${window.innerWidth}&h=${window.innerHeight}&webcodec=${supportedWebCodec}`;
+    console.log(`Trying ${host}:${port}...`);
     
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-            reject(new Error(`Timeout on port ${port}`));
-        }, 3000); // Timeout plus court par port
+            reject(new Error(`Timeout on ${host}:${port}`));
+        }, 3000);
         
         fetch(urlToFetch, {method: 'get', signal: controller.signal})
             .then(response => {
                 clearTimeout(timeout);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status} on port ${port}`);
-                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.text();
             })
             .then(data => {
                 if (isJson(data)) {
-                    console.log(`Successfully connected to port ${port}`);
-                    resolve({data, port});
+                    console.log(`✅ Success! Connected to ${host}:${port}`);
+                    resolve({data, port, host});
                 } else {
-                    reject(new Error(`Invalid response from port ${port}`));
+                    reject(new Error(`Invalid JSON from ${host}:${port}`));
                 }
             })
             .catch(error => {
@@ -304,72 +298,42 @@ async function tryPort(port, controller) {
 }
 
 /**
- * Teste plusieurs ports successivement jusqu'à trouver un serveur
+ * Teste plusieurs hôtes et ports successivement
  */
 async function checkPhone() {
-    console.log('Starting server discovery...');
-
-    // Step 1/3: Server Discovery
+    console.log('Starting intelligent discovery...');
     updateConnectionProgress(1, '1/3 - Discovering server...');
 
     controller = new AbortController();
+    const discoveryTargets = [
+        ...VIRTUAL_IPS,
+        "192.168.43.1",
+        "192.168.44.1",
+        "taada.top"
+    ];
 
     try {
-        // Essayer chaque port successivement
-        for (let i = 0; i < MAX_PORT_RETRIES; i++) {
-            const port = DEFAULT_HTTPS_PORT + i;
-            
-            try {
-                const result = await tryPort(port, controller);
-                
-                // Vérifier si la page est cachée avant de traiter
-                if (document.hidden) {
-                    setTimeout(() => {
-                        checkPhone();
-                    }, 2000);
+        for (const host of discoveryTargets) {
+            for (let i = 0; i < MAX_PORT_RETRIES; i++) {
+                const testPort = DEFAULT_HTTPS_PORT + i;
+                try {
+                    const result = await tryHostPort(host, testPort, controller);
+                    const json = JSON.parse(result.data);
+                    
+                    // Update global state with the working host
+                    window.WORKING_HOST = host;
+                    
+                    updateConnectionProgress(1, '1/3 - Server found!');
+                    postWorkerMessages(json);
                     return;
-                }
-                
-                // Serveur trouvé, traiter la réponse
-                const json = JSON.parse(result.data);
-
-                // Ajouter le port utilisé aux logs pour information
-                console.log(`Server found on port ${result.port}, processing response...`);
-
-                // Update progress: Server found, moving to next step
-                updateConnectionProgress(1, '1/3 - Server found!');
-
-                postWorkerMessages(json);
-                return; // Succès, arrêter la recherche
-                
-            } catch (error) {
-                console.log(`Port ${port} failed: ${error.message}`);
-                
-                // Continuer avec le port suivant
-                if (i === MAX_PORT_RETRIES - 1) {
-                    // C'était la dernière tentative
-                    throw new Error(`No server found after testing ports ${DEFAULT_HTTPS_PORT} to ${DEFAULT_HTTPS_PORT + MAX_PORT_RETRIES - 1}`);
+                } catch (e) {
+                    console.log(`Skip ${host}:${testPort}: ${e.message}`);
                 }
             }
         }
+        throw new Error("All discovery targets failed.");
     } catch (error) {
-        console.error('Server discovery failed:', error);
-        
-        // Afficher un message d'erreur à l'utilisateur
-        /*if (warningElement) {
-            warningElement.style.display = "block";
-            logElement.style.display = "none";
-            warningElement.innerText = "Unable to connect to server. Please check that TaaDa is running.";
-        }*/
-        
-        // Réessayer après un délai
-        setTimeout(() => {
-            /*if (warningElement) {
-                warningElement.style.display = "none";
-                logElement.style.display = "block";
-            }*/
-            checkPhone();
-        }, 5000);
+        setTimeout(checkPhone, 5000);
     }
 }
 
@@ -511,7 +475,7 @@ function postWorkerMessages(json) {
     
     // Initialiser le worker avec le canvas offscreen
     demuxDecodeWorker.postMessage(
-        {canvas: offscreen, port: port, action: 'INIT', appVersion: appVersion, broadway: forceBroadway, width: width, height: height}, 
+        {canvas: offscreen, port: port, host: window.WORKING_HOST, action: 'INIT', appVersion: appVersion, broadway: forceBroadway, width: width, height: height}, 
         [offscreen]
     );
 
@@ -520,6 +484,24 @@ function postWorkerMessages(json) {
         usebt = json.usebt;
         document.getElementById("muteicon").style.display="block";
 
+        mediaPCMSocket = new WebSocket(`wss://${window.WORKING_HOST}:${port+1}`);
+        mediaPCMSocket.binaryType = "arraybuffer";
+        mediaPCMSocket.onopen = () => {
+            console.log("Audio socket opened");
+        };
+        mediaPCMSocket.onmessage = (event) => {
+            if (player) {
+                player.feed(new Float32Array(event.data));
+            }
+        };
+
+        ttsPCMSocket = new WebSocket(`wss://${window.WORKING_HOST}:${port+2}`);
+        ttsPCMSocket.binaryType = "arraybuffer";
+        ttsPCMSocket.onmessage = (event) => {
+            if (ttsPlayer) {
+                ttsPlayer.feed(new Float32Array(event.data));
+            }
+        };
     }
 
     // Show the waiting message after socket port is retrieved
@@ -1031,7 +1013,7 @@ let ttsPCMSocket;
 function startAudio(){
     // Note: port est maintenant le port HTTPS découvert dynamiquement
     // Les ports audio restent relatifs à ce port de base
-    mediaPCMSocket = new WebSocket(`wss://taada.top:${port+1}`);
+    mediaPCMSocket = new WebSocket(`wss://89.83.67.207:${port+1}`);
     mediaPCMSocket.binaryType = "arraybuffer";
     mediaPCMSocket.addEventListener('open', () => {
         mediaPCMSocket.binaryType = "arraybuffer";
@@ -1043,7 +1025,7 @@ function startAudio(){
         mediaPCM.feed(data);
     });
 
-    ttsPCMSocket = new WebSocket(`wss://taada.top:${port+2}`);
+    ttsPCMSocket = new WebSocket(`wss://89.83.67.207:${port+2}`);
     ttsPCMSocket.binaryType = "arraybuffer";
     ttsPCMSocket.addEventListener('open', () => {
         ttsPCMSocket.binaryType = "arraybuffer";
